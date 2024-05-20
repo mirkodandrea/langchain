@@ -1,0 +1,114 @@
+import json
+from datetime import datetime
+
+import requests
+from langchain_community.document_loaders import AsyncHtmlLoader
+from langchain_community.document_transformers import Html2TextTransformer
+from openai import OpenAI
+
+from google_news_search import get_news_articles
+import os
+import dotenv
+dotenv.load_dotenv()
+
+client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
+
+
+def get_latest_news_urls(country: str) -> list:
+    query = f"(wildfire OR forest fire) AND {country}"
+    print(f"Query: {query}")
+    date = datetime.strptime("2024-05-15", "%Y-%m-%d").date()
+    all_news = get_news_articles(query, date, "EN")
+
+    urls = []
+    for _news in all_news:
+        url = _news[1]
+        if url.startswith('https://news.google.com/rss/articles/'):
+            downloaded = requests.get(url).text
+            # find the url in the html
+            try:
+                url = downloaded.split('<link rel="canonical" href="')[
+                    1].split('"')[0]
+
+                urls.append(url)
+
+            except:
+                # print('google news detected but no url found')
+                continue
+
+    # filter and keep unique urls
+    urls = list(set(urls))[0:5]
+    return urls
+
+
+def get_latest_news(urls: list) -> list:
+    print(f'Found {len(urls)} unique urls')
+    results = []
+    for idx, url in enumerate(urls):
+        print(f'{idx+1}/{len(urls)}: {url}')
+        loader = AsyncHtmlLoader([url])
+        docs = loader.load()
+
+        html2text = Html2TextTransformer()
+        docs_transformed = html2text.transform_documents(docs)
+        article = docs_transformed[0].page_content
+
+        my_assistant = client.beta.assistants.retrieve(
+            "asst_JdkhCC6FXBmdTYCLtIGSqU0k"
+        )
+
+        thread = client.beta.threads.create(
+            messages=[
+                {
+                    "role": "assistant",
+                    "content": '''
+                    extract the following informations
+                    {
+                        date: string,
+                        affected_population: number|null,
+                        country: string,
+                        approximate_location: [number, number], // lat, lon
+                        description: string, //short description
+                        relevant: boolean // is it relevant to wildfires?
+                    }'''
+
+                },
+                {
+                    "role": "user",
+                    "content": article,
+                }
+            ]
+        )
+
+        run = client.beta.threads.runs.create(
+            thread_id=thread.id,
+            assistant_id=my_assistant.id
+        )
+
+        while run.status in ["queued", "in_progress"]:
+            keep_retrieving_run = client.beta.threads.runs.retrieve(
+                thread_id=thread.id,
+                run_id=run.id
+            )
+            print(f"Run status: {keep_retrieving_run.status}")
+
+            if keep_retrieving_run.status == "completed":
+                print("\n")
+
+                # Step 6: Retrieve the Messages added by the Assistant to the Thread
+                all_messages = client.beta.threads.messages.list(
+                    thread_id=thread.id
+                )
+
+                break
+            elif keep_retrieving_run.status == "queued" or keep_retrieving_run.status == "in_progress":
+                pass
+            else:
+                print(f"Run status: {keep_retrieving_run.status}")
+                break
+
+        data = json.loads(all_messages.data[0].content[0].text.value)
+        data['url'] = url
+        results.append(data)
+
+    return results

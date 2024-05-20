@@ -13,7 +13,7 @@ dotenv.load_dotenv()
 client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
 
 
-query = "wildfire AND forest fire AND Canada AND 2024"
+query = "(wildfire OR forest fire) AND Canada AND 2024"
 date = datetime.strptime("2024-05-15", "%Y-%m-%d").date()
 all_news = get_news_articles(query, date, "EN")
 
@@ -26,12 +26,18 @@ for _news in all_news:
         try:
             url = downloaded.split('<link rel="canonical" href="')[
                 1].split('"')[0]
-            # print('google news detected', url)
+
+            urls.append(url)
+
         except:
             # print('google news detected but no url found')
             continue
 
-    urls.append(url)
+
+# filter and keep unique urls
+urls = list(set(urls))
+
+print(f'Found {len(urls)} unique urls')
 
 results = []
 
@@ -45,10 +51,25 @@ for idx, url in enumerate(urls):
     article = docs_transformed[0].page_content
 
     my_assistant = client.beta.assistants.retrieve(
-        "asst_JdkhCC6FXBmdTYCLtIGSqU0k")
+        "asst_JdkhCC6FXBmdTYCLtIGSqU0k"
+    )
 
     thread = client.beta.threads.create(
         messages=[
+            {
+                "role": "assistant",
+                "content": '''
+                extract the following informations
+                {
+                    date: string,
+                    affected_population: number|null,
+                    country: string,
+                    approximate_location: [number, number], // lat, lon
+                    description: string, //short description
+                    relevant: boolean // is it relevant to wildfires?
+                }'''
+
+            },
             {
                 "role": "user",
                 "content": article,
@@ -83,8 +104,8 @@ for idx, url in enumerate(urls):
             print(f"Run status: {keep_retrieving_run.status}")
             break
 
-        data = json.loads(all_messages.data[0].content[0].text.value)
-        data['url'] = url
-        results.append(data)
+    data = json.loads(all_messages.data[0].content[0].text.value)
+    data['url'] = url
+    results.append(data)
 
-        json.dump(results, open('results.json', 'w'))
+    json.dump(results, open('results.json', 'w'))
